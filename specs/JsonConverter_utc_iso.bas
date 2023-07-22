@@ -1,6 +1,6 @@
 Attribute VB_Name = "JsonConverter"
 ''
-' VBA-JSON v2.3.2
+' VBA-JSON v2.3.1
 ' (c) Tim Hall - https://github.com/VBA-tools/VBA-JSON
 '
 ' JSON Converter for VBA
@@ -44,18 +44,6 @@ Attribute VB_Name = "JsonConverter"
 ' SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
 Option Explicit
-
-#Const UseScriptingDictionaryIfAvailable = True
-' Compilation option:
-'----
-' DictionaryBinding: can specify early or late binding of Scripting.Dictionary.
-'	MS Word: import VBA-Dictionary or define non-zero DictionaryBinding
-'	Mac: import VBA-Dictionary (Scripting.Dictionary not available)
-' 	Default (0): use Dictionary class (VBA-Dictionary or early-bound Scripting.Dictionary)
-'	To set, uncomment one of the following or define in the VBA project Properties (colon-separated list)
-#Const DictionaryBinding = 1     ‘ Early bind Scripting.Dictionary
-'#Const DictionaryBinding = -1    ‘ Late bind Scripting.Dictionary
-'----
 
 ' === VBA-UTC Headers
 #If Mac Then
@@ -166,9 +154,13 @@ Private Type json_Options
 
     ' The solidus (/) is not required to be escaped, use this option to escape them as \/ in ConvertToJson
     EscapeSolidus As Boolean
-
+    
     ' Allow Unicode characters in JSON text. Set to True to use native Unicode or false for escaped values.
     AllowUnicodeChars As Boolean
+    
+    'before version 2.3.1 dates where converted to UTC in ConvertToJson method, but not when json was parsed.
+    'Convert datetime values to UTC/ISO (false, slower) or dont change local <-> global times (true, faster)
+    DontConvertDates As Boolean
 End Type
 Public JsonOptions As json_Options
 
@@ -245,7 +237,12 @@ Public Function ConvertToJson(ByVal JsonValue As Variant, Optional ByVal Whitesp
         ConvertToJson = "null"
     Case VBA.vbDate
         ' Date
-        json_DateStr = ConvertToIso(VBA.CDate(JsonValue))
+       'json_DateStr = ConvertToIso(VBA.CDate(JsonValue))
+        If Not JsonOptions.DontConvertDates Then
+            json_DateStr = ConvertToIso(VBA.CDate(JsonValue))
+        Else
+            json_DateStr = VBA.CDate(JsonValue)
+        End If
 
         ConvertToJson = """" & json_DateStr & """"
     Case VBA.vbString
@@ -395,9 +392,9 @@ Public Function ConvertToJson(ByVal JsonValue As Variant, Optional ByVal Whitesp
                     End If
 
                     If json_PrettyPrint Then
-                        json_Converted = vbNewLine & json_Indentation & """" & json_Encode(json_Key) & """: " & json_Converted
+                        json_Converted = vbNewLine & json_Indentation & """" & json_Key & """: " & json_Converted
                     Else
-                        json_Converted = """" & json_Encode(json_Key) & """:" & json_Converted
+                        json_Converted = """" & json_Key & """:" & json_Converted
                     End If
 
                     json_BufferAppend json_Buffer, json_Converted, json_BufferPosition, json_BufferLength
@@ -469,66 +466,21 @@ Public Function ConvertToJson(ByVal JsonValue As Variant, Optional ByVal Whitesp
     End Select
 End Function
 
-''
-' Convert part of JSON string to Variant (Dictionary/Collection/Boolean/String/Double/Null)
-'
-' @method ParseJsonPart
-' @param {String} json_String
-' @paramArray {Variant} keys()
-' @return {Variant} (Dictionary or Collection or Boolean or String or Double or Null)
-' use ParseJsonPart(json_String "foo", "bar", ..."baz")
-' like ParseJson(json_String)("foo")("bar")...("baz") but without parse all json_String
-''
-Public Function ParseJsonPart(ByVal JsonString As String, ParamArray keys()) As Variant
-    Dim json_Index As Long
-    Dim key
-    Dim key_Index As Long
-    json_Index = 1
-
-    ' Remove vbCr, vbLf, and vbTab from json_String
-    JsonString = VBA.Replace(VBA.Replace(VBA.Replace(JsonString, VBA.vbCr, ""), VBA.vbLf, ""), VBA.vbTab, "")
-    On Error GoTo ErrorHandling
-    For Each key In keys
-        If JsonOptions.AllowUnquotedKeys Then
-            key_Index = VBA.InStr(json_Index, JsonString, key)
-        Else
-            key_Index = VBA.InStr(json_Index, JsonString, """" & key & """")
-            If key_Index = 0 Then key_Index = VBA.InStr(json_Index, JsonString, "'" & key & "'")
-        End If
-        If key_Index = 0 Then GoTo ErrorHandling
-        json_Index = key_Index
-        json_ParseKey JsonString, json_Index
-    Next
-    json_SkipSpaces JsonString, json_Index
-    Select Case VBA.Mid$(JsonString, json_Index, 1)
-    Case "{", "["
-        Set ParseJsonPart = json_ParseValue(JsonString, json_Index)
-    Case Else
-        ParseJsonPart = json_ParseValue(JsonString, json_Index)
-    End Select
-    Exit Function
-ErrorHandling:
-    ParseJsonPart = Null
-End Function
-
 ' ============================================= '
 ' Private Functions
 ' ============================================= '
-#If Mac Or Not UseScriptingDictionaryIfAvailable Then
-Private Function json_ParseObject(json_String As String, ByRef json_Index As Long) As Dictionary
-    Set json_ParseObject = New Dictionary
-#ElseIf DictionaryBinding = 1 then
+
 Private Function json_ParseObject(json_String As String, ByRef json_Index As Long) As Object
-    Set json_ParseObject = New Scripting.Dictionary
-#ElseIf DictionaryBinding = -1 then
-Private Function json_ParseObject(json_String As String, ByRef json_Index As Long) As Object
-    Set json_ParseObject = CreateObject("Scripting.Dictionary")
-#Else
-Private Function json_ParseObject(json_String As String, ByRef json_Index As Long) As Object
-    Set json_ParseObject = New Dictionary
-#End If
     Dim json_Key As String
     Dim json_NextChar As String
+
+    'Set json_ParseObject = New Dictionary
+#If Mac Then
+    Set json_ParseObject = New Disctionary
+#Else
+'    Set json_ParseObject = CreateObject("Scripting.Dictionary")
+    Set json_ParseObject = CreateObject("Scripting.Dictionary")
+#End If
 
     json_SkipSpaces json_String, json_Index
     If VBA.Mid$(json_String, json_Index, 1) <> "{" Then
@@ -659,6 +611,8 @@ Private Function json_ParseString(json_String As String, ByRef json_Index As Lon
             End Select
         Case json_Quote
             json_ParseString = json_BufferToString(json_Buffer, json_BufferPosition)
+            'only test for same ISO format in ConvertToIso method
+            If Not JsonOptions.DontConvertDates Then If json_ParseString Like "####-##-##T##:##:##.###Z" Then json_ParseString = ParseIso(json_ParseString)
             json_Index = json_Index + 1
             Exit Function
         Case Else
@@ -796,7 +750,7 @@ Private Function json_Encode(ByVal json_Text As Variant) As String
             ' Non-ascii characters -> convert to 4-digit hex
             json_Char = "\u" & VBA.Right$("0000" & VBA.Hex$(json_AscCode), 4)
         Case 127 To 65535
-            ' Unicode character range
+              ' Unicode character range
             If Not JsonOptions.AllowUnicodeChars Then
                 json_Char = "\u" & VBA.Right$("0000" & VBA.Hex$(json_AscCode), 4)
             End If
@@ -1193,4 +1147,3 @@ Private Function utc_SystemTimeToDate(utc_Value As utc_SYSTEMTIME) As Date
 End Function
 
 #End If
-
